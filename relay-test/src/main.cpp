@@ -1,18 +1,25 @@
 #include <Arduino.h>
 
-#define RELAY_PIN 13   // change if your relay is on another pin
+#define RELAY_PIN 3
 
 void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("START");
+
   pinMode(RELAY_PIN, OUTPUT);
 
-  // start locked / off
-  digitalWrite(RELAY_PIN, LOW);
+  // OFF at start (important for low-trigger relay)
+  digitalWrite(RELAY_PIN, HIGH);
 }
 
 void loop() {
-  digitalWrite(RELAY_PIN, HIGH);   // relay ON
+  Serial.println("RELAY ON");
+  digitalWrite(RELAY_PIN, LOW);   // ON
   delay(2000);
 
-  digitalWrite(RELAY_PIN, LOW);    // relay OFF
+  Serial.println("RELAY OFF");
+  digitalWrite(RELAY_PIN, HIGH);  // OFF
   delay(2000);
 }
