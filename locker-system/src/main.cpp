@@ -8,9 +8,9 @@
 // =========================
 // WIFI
 // =========================
-const char* ssid = "ZTE_2.4G_7QFQX7";
-const char* password = "YU2GR4Tx";
-const char* serverURL = "http://192.168.1.29:3000/api/iot";
+const char* ssid = "SSID";
+const char* password = "WIFI_PW";
+const char* serverURL = "http://192.168.1.29:3000/api/iot_EDIT_IT";
 
 // =========================
 // LOCKER
@@ -201,37 +201,44 @@ void loop() {
     if (key >= '0' && key <= '9') {
       inputCode += key;
 
-      if (inputCode.length() == 4) {
+      if (inputCode.length() == 4 || inputCode.length() == 7) {
 
         String result = verifyCode(inputCode);
 
         // =========================
-        // OWNER
+        // PIN
         // =========================
-        if (result.indexOf("\"mode\":\"OWNER\"") != -1) {
+        if (inputCode.length() == 4) {
 
-          sendLog("PIN_VALID");
-          unlockBox();
-          sendLog("LOCK_OPEN");
+          if (result.indexOf("\"mode\":\"OWNER\"") != -1) {
 
-          currentMode = OWNER;
+            sendLog("PIN_VALID");
+            unlockBox();
+            sendLog("LOCK_OPEN");
+
+            currentMode = OWNER;
+          } else {
+            sendLog("INVALID_PIN");
+            lockBox();
+          }
         }
 
         // =========================
         // DELIVERY
         // =========================
-        else if (result.indexOf("\"mode\":\"DELIVERY\"") != -1) {
+        else if (inputCode.length() == 7) {
 
-          sendLog("DELIVERY_VALID");
-          unlockBox();
-          sendLog("LOCK_OPEN");
+          if (result.indexOf("\"mode\":\"DELIVERY\"") != -1) {
 
-          currentMode = DELIVERY;
-        }
+            sendLog("DELIVERY_VALID");
+            unlockBox();
+            sendLog("LOCK_OPEN");
 
-        else {
-          sendLog("INVALID_PIN");
-          lockBox();
+            currentMode = DELIVERY;
+          } else {
+            sendLog("INVALID_TRACKING");
+            lockBox();
+          }
         }
 
         inputCode = "";
