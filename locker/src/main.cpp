@@ -4,20 +4,20 @@
 #include <Keypad_I2C.h>
 
 // =========================
-// PIN SETUP
+// PINS
 // =========================
-#define SDA_PIN     14
-#define SCL_PIN     2
+#define SDA_PIN     2
+#define SCL_PIN     16
 
-#define TRIG_PIN    13
-#define ECHO_PIN    15   // OK as INPUT
+#define TRIG_PIN    14
+#define ECHO_PIN    15
 
-#define RELAY_PIN   12   // or 13 if free
+#define RELAY_PIN   13   // working pin
 
 // =========================
-// PCF8574 / KEYPAD
+// KEYPAD
 // =========================
-#define PCF_ADDR    0x20
+#define PCF_ADDR 0x20
 
 const byte ROWS = 4;
 const byte COLS = 3;
@@ -29,26 +29,17 @@ char keys[ROWS][COLS] = {
   {'*','0','#'}
 };
 
-byte rowPins[ROWS] = {0, 1, 2, 3};   // P0 P1 P2 P3
-byte colPins[COLS] = {4, 5, 6};      // P4 P5 P6
+byte rowPins[ROWS] = {0,1,2,3};
+byte colPins[COLS] = {4,5,6};
 
 Keypad_I2C keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS, PCF_ADDR);
 
 // =========================
-// ACCESS CODE
+// SETTINGS
 // =========================
-const String validCode = "1234";
-
-// =========================
-// RELAY SETTINGS
-// =========================
-bool relayActiveHigh = false;
-
-// =========================
-// SENSOR SETTINGS
-// =========================
-const int parcelThresholdCm = 15;
-const unsigned long detectHoldMs = 1500;
+const String ownerCode  = "1234";
+const String parcelCode = "5678";
+const int threshold = 13;
 
 // =========================
 // STATE
@@ -57,28 +48,31 @@ bool systemAwake = false;
 bool boxUnlocked = false;
 String inputCode = "";
 
-unsigned long detectStart = 0;
+enum Mode {
+  NONE,
+  OWNER,
+  DELIVERY
+};
+
+Mode currentMode = NONE;
 
 // =========================
-// FUNCTIONS
+// RELAY (ACTIVE LOW)
 // =========================
 void lockBox() {
-  digitalWrite(RELAY_PIN, relayActiveHigh ? LOW : HIGH);
+  digitalWrite(RELAY_PIN, LOW);   // OFF (LOCKED)
   boxUnlocked = false;
+  currentMode = NONE;
 }
 
 void unlockBox() {
-  digitalWrite(RELAY_PIN, relayActiveHigh ? HIGH : LOW);
+  digitalWrite(RELAY_PIN, HIGH);  // ON (UNLOCKED)
   boxUnlocked = true;
 }
 
-void resetSystem() {
-  systemAwake = false;
-  inputCode = "";
-  detectStart = 0;
-  lockBox();
-}
-
+// =========================
+// ULTRASONIC
+// =========================
 long readDistanceCm() {
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -88,27 +82,25 @@ long readDistanceCm() {
   digitalWrite(TRIG_PIN, LOW);
 
   long duration = pulseIn(ECHO_PIN, HIGH, 30000);
-
   if (duration == 0) return -1;
 
-  long distance = duration * 0.034 / 2;
-  return distance;
-}
-
-bool isValidCode(const String& code) {
-  return (code == validCode);
+  return duration * 0.034 / 2;
 }
 
 // =========================
 // SETUP
 // =========================
 void setup() {
+  // 🔥 correct boot behavior
+  digitalWrite(RELAY_PIN, LOW);  // start LOCKED
   pinMode(RELAY_PIN, OUTPUT);
+
+  pinMode(4, OUTPUT);   // kill flash LED
+  digitalWrite(4, LOW);
+
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-
   digitalWrite(TRIG_PIN, LOW);
-  lockBox();
 
   Wire.begin(SDA_PIN, SCL_PIN);
   keypad.begin();
@@ -122,7 +114,9 @@ void loop() {
 
   if (key) {
     if (key == '*') {
-      resetSystem();
+      systemAwake = false;
+      inputCode = "";
+      lockBox();
       return;
     }
 
@@ -138,12 +132,21 @@ void loop() {
       inputCode += key;
 
       if (inputCode.length() == 4) {
-        if (isValidCode(inputCode)) {
+
+        if (inputCode == ownerCode) {
           unlockBox();
-          detectStart = 0;
-        } else {
-          resetSystem();
+          currentMode = OWNER;
         }
+        else if (inputCode == parcelCode) {
+          unlockBox();
+          currentMode = DELIVERY;
+        }
+        else {
+          systemAwake = false;
+          lockBox();
+        }
+
+        inputCode = "";
       }
     }
   }
@@ -151,21 +154,21 @@ void loop() {
   if (boxUnlocked) {
     long d = readDistanceCm();
 
-    if (d > 0 && d < parcelThresholdCm) {
-      if (detectStart == 0) {
-        detectStart = millis();
-      }
-
-      if (millis() - detectStart >= detectHoldMs) {
+    if (currentMode == DELIVERY) {
+      // parcel placed → CLOSE
+      if (d != -1 && d < threshold) {
         lockBox();
         systemAwake = false;
-        inputCode = "";
-        detectStart = 0;
       }
-    } else {
-      detectStart = 0;
+    }
+    else if (currentMode == OWNER) {
+      // parcel removed → CLOSE
+      if (d == -1 || d >= threshold) {
+        lockBox();
+        systemAwake = false;
+      }
     }
   }
 
-  delay(30);
+  delay(50);
 }
