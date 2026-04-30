@@ -2,17 +2,29 @@
 #include <Wire.h>
 #include <Keypad.h>
 #include <Keypad_I2C.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+// =========================
+// WIFI
+// =========================
+const char* ssid = "ZTE_2.4G_7QFQX7";
+const char* password = "YU2GR4Tx";
+const char* serverURL = "http://192.168.1.29:3000/api/iot";
+
+// =========================
+// LOCKER
+// =========================
+const String lockerCode = "LOCKER_1777220125689";
 
 // =========================
 // PINS
 // =========================
-#define SDA_PIN     2
-#define SCL_PIN     16
-
-#define TRIG_PIN    14
-#define ECHO_PIN    15
-
-#define RELAY_PIN   13   // working pin
+#define SDA_PIN 2
+#define SCL_PIN 16
+#define RELAY_PIN 13
+#define TRIG_PIN 14
+#define ECHO_PIN 15
 
 // =========================
 // KEYPAD
@@ -35,15 +47,9 @@ byte colPins[COLS] = {4,5,6};
 Keypad_I2C keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS, PCF_ADDR);
 
 // =========================
-// SETTINGS
-// =========================
-const String ownerCode  = "1234";
-const String parcelCode = "5678";
-const int threshold = 13;
-
-// =========================
 // STATE
 // =========================
+const int threshold = 13;
 bool systemAwake = false;
 bool boxUnlocked = false;
 String inputCode = "";
@@ -57,12 +63,11 @@ enum Mode {
 Mode currentMode = NONE;
 
 // =========================
-// RELAY (ACTIVE LOW)
+// RELAY
 // =========================
 void lockBox() {
   digitalWrite(RELAY_PIN, LOW);   // OFF (LOCKED)
   boxUnlocked = false;
-  currentMode = NONE;
 }
 
 void unlockBox() {
@@ -71,8 +76,66 @@ void unlockBox() {
 }
 
 // =========================
-// ULTRASONIC
+// WIFI CONNECT
 // =========================
+void maintainWiFi() {
+  static unsigned long lastTry = 0;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastTry > 5000) {
+      Serial.println("Reconnecting WiFi...");
+      WiFi.begin(ssid, password);
+      lastTry = millis();
+    }
+  }
+}
+
+// =========================
+// VERIFY FROM BACKEND
+// =========================
+String verifyCode(String code) {
+  if (WiFi.status() != WL_CONNECTED) return "";
+
+  WiFiClient client;
+  HTTPClient http;
+
+  if (!http.begin(client, serverURL)) return "";
+
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(3000);
+
+  String body = "{\"code\":\"" + code + "\",\"lockerCode\":\"" + lockerCode + "\"}";
+  int httpCode = http.POST(body);
+
+  String response = "";
+  if (httpCode > 0) {
+    response = http.getString();
+  }
+
+  http.end();
+  return response;
+}
+
+// =========================
+// SEND LOG
+// =========================
+void sendLog(String status) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClient client;
+  HTTPClient http;
+
+  http.begin(client, serverURL);
+  http.addHeader("Content-Type", "application/json");
+
+  String body = "{\"status\":\"" + status + "\",\"lockerCode\":\"" + lockerCode + "\"}";
+  http.POST(body);
+
+  http.end();
+
+  Serial.println("LOG SENT: " + status);
+}
+
 long readDistanceCm() {
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -91,28 +154,35 @@ long readDistanceCm() {
 // SETUP
 // =========================
 void setup() {
-  // 🔥 correct boot behavior
-  digitalWrite(RELAY_PIN, LOW);  // start LOCKED
-  pinMode(RELAY_PIN, OUTPUT);
+  Serial.begin(115200);
+  delay(1000);
 
-  pinMode(4, OUTPUT);   // kill flash LED
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);  // start locked
+
+  pinMode(4, OUTPUT);
   digitalWrite(4, LOW);
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+  keypad.begin();
+
+  WiFi.begin(ssid, password);
 
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
   digitalWrite(TRIG_PIN, LOW);
-
-  Wire.begin(SDA_PIN, SCL_PIN);
-  keypad.begin();
 }
 
 // =========================
 // LOOP
 // =========================
 void loop() {
+  maintainWiFi();
+
   char key = keypad.getKey();
 
   if (key) {
+
     if (key == '*') {
       systemAwake = false;
       inputCode = "";
@@ -128,47 +198,121 @@ void loop() {
       return;
     }
 
-    if (!boxUnlocked && key >= '0' && key <= '9') {
+    if (key >= '0' && key <= '9') {
       inputCode += key;
 
       if (inputCode.length() == 4) {
 
-        if (inputCode == ownerCode) {
+        String result = verifyCode(inputCode);
+
+        // =========================
+        // OWNER
+        // =========================
+        if (result.indexOf("\"mode\":\"OWNER\"") != -1) {
+
+          sendLog("PIN_VALID");
           unlockBox();
+          sendLog("LOCK_OPEN");
+
           currentMode = OWNER;
         }
-        else if (inputCode == parcelCode) {
+
+        // =========================
+        // DELIVERY
+        // =========================
+        else if (result.indexOf("\"mode\":\"DELIVERY\"") != -1) {
+
+          sendLog("DELIVERY_VALID");
           unlockBox();
+          sendLog("LOCK_OPEN");
+
           currentMode = DELIVERY;
         }
+
         else {
-          systemAwake = false;
+          sendLog("INVALID_PIN");
           lockBox();
         }
 
         inputCode = "";
+        systemAwake = false;
       }
     }
   }
 
-  if (boxUnlocked) {
-    long d = readDistanceCm();
+if (boxUnlocked) {
 
+  static unsigned long detectStartTime = 0;
+  static bool detecting = false;
+
+  long d = readDistanceCm();
+
+  if (d == -1) {
+    detecting = false;
+    detectStartTime = 0;
+  } else {
+
+    // =========================
+    // DELIVERY (parcel placed)
+    // =========================
     if (currentMode == DELIVERY) {
-      // parcel placed → CLOSE
-      if (d != -1 && d < threshold) {
-        lockBox();
-        systemAwake = false;
+
+      if (d < threshold) {
+
+        if (!detecting) {
+          detecting = true;
+          detectStartTime = millis();  // start timer
+        }
+
+        // check if stayed for 5 seconds
+        if (millis() - detectStartTime >= 5000) {
+
+          sendLog("PARCEL_DETECTED");
+
+          lockBox();
+          sendLog("LOCK_CLOSED");
+
+          currentMode = NONE;
+          detecting = false;
+        }
+
+      } else {
+        // parcel removed too early → cancel
+        detecting = false;
+        detectStartTime = 0;
       }
     }
+
+    // =========================
+    // OWNER (parcel removed)
+    // =========================
     else if (currentMode == OWNER) {
-      // parcel removed → CLOSE
-      if (d == -1 || d >= threshold) {
-        lockBox();
-        systemAwake = false;
+
+      if (d >= threshold) {
+
+        if (!detecting) {
+          detecting = true;
+          detectStartTime = millis();
+        }
+
+        if (millis() - detectStartTime >= 5000) {
+
+          sendLog("PARCEL_REMOVED");
+          sendLog("ALL_PARCELS_RETRIEVED");
+          lockBox();
+          sendLog("LOCK_CLOSED");
+
+          currentMode = NONE;
+          detecting = false;
+        }
+
+      } else {
+        detecting = false;
+        detectStartTime = 0;
       }
     }
   }
-
-  delay(50);
 }
+
+delay(50); }
+
