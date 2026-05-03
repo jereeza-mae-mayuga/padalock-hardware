@@ -8,9 +8,9 @@
 // =========================
 // WIFI
 // =========================
-const char* ssid = "ZTE_2.4G_7QFQX7";
-const char* password = "YU2GR4Tx";
-const char* serverURL = "http://192.168.1.29:3000/api/iot";
+const char* ssid = "IoEnnovate2026_3";
+const char* password = "Sdca@wifi";
+const char* serverURL = "http://192.168.0.103:3000/api/iot";
 
 // =========================
 // LOCKER
@@ -66,12 +66,12 @@ Mode currentMode = NONE;
 // RELAY
 // =========================
 void lockBox() {
-  digitalWrite(RELAY_PIN, LOW);   // OFF (LOCKED)
+  digitalWrite(RELAY_PIN, LOW);
   boxUnlocked = false;
 }
 
 void unlockBox() {
-  digitalWrite(RELAY_PIN, HIGH);  // ON (UNLOCKED)
+  digitalWrite(RELAY_PIN, HIGH);
   boxUnlocked = true;
 }
 
@@ -136,6 +136,9 @@ void sendLog(String status) {
   Serial.println("LOG SENT: " + status);
 }
 
+// =========================
+// ULTRASONIC
+// =========================
 long readDistanceCm() {
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -158,7 +161,7 @@ void setup() {
   delay(1000);
 
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);  // start locked
+  digitalWrite(RELAY_PIN, LOW);
 
   pinMode(4, OUTPUT);
   digitalWrite(4, LOW);
@@ -177,6 +180,7 @@ void setup() {
 // LOOP
 // =========================
 void loop() {
+
   maintainWiFi();
 
   char key = keypad.getKey();
@@ -205,9 +209,6 @@ void loop() {
 
         String result = verifyCode(inputCode);
 
-        // =========================
-        // OWNER
-        // =========================
         if (result.indexOf("\"mode\":\"OWNER\"") != -1) {
 
           sendLog("PIN_VALID");
@@ -217,9 +218,6 @@ void loop() {
           currentMode = OWNER;
         }
 
-        // =========================
-        // DELIVERY
-        // =========================
         else if (result.indexOf("\"mode\":\"DELIVERY\"") != -1) {
 
           sendLog("DELIVERY_VALID");
@@ -240,79 +238,76 @@ void loop() {
     }
   }
 
-if (boxUnlocked) {
+  // =========================
+  // SENSOR LOGIC
+  // =========================
+  if (boxUnlocked) {
 
-  static unsigned long detectStartTime = 0;
-  static bool detecting = false;
+    static unsigned long detectStartTime = 0;
+    static bool detecting = false;
 
-  long d = readDistanceCm();
+    long d = readDistanceCm();
 
-  if (d == -1) {
-    detecting = false;
-    detectStartTime = 0;
-  } else {
+    if (d == -1) {
+      detecting = false;
+      detectStartTime = 0;
+    } else {
 
-    // =========================
-    // DELIVERY (parcel placed)
-    // =========================
-    if (currentMode == DELIVERY) {
+      // DELIVERY
+      if (currentMode == DELIVERY) {
 
-      if (d < threshold) {
+        if (d > 0 && d < threshold) {
 
-        if (!detecting) {
-          detecting = true;
-          detectStartTime = millis();  // start timer
-        }
+          if (!detecting) {
+            detecting = true;
+            detectStartTime = millis();
+          }
 
-        // check if stayed for 5 seconds
-        if (millis() - detectStartTime >= 5000) {
+          if (millis() - detectStartTime >= 3000) {
 
-          sendLog("PARCEL_DETECTED");
+            sendLog("PARCEL_DETECTED");
 
-          lockBox();
-          sendLog("LOCK_CLOSED");
+            lockBox();
+            sendLog("LOCK_CLOSED");
 
-          currentMode = NONE;
+            currentMode = NONE;
+            detecting = false;
+          }
+
+        } else {
           detecting = false;
+          detectStartTime = 0;
         }
-
-      } else {
-        // parcel removed too early → cancel
-        detecting = false;
-        detectStartTime = 0;
       }
-    }
 
-    // =========================
-    // OWNER (parcel removed)
-    // =========================
-    else if (currentMode == OWNER) {
+      // OWNER
+      else if (currentMode == OWNER) {
 
-      if (d >= threshold) {
+        if (d > threshold) {
 
-        if (!detecting) {
-          detecting = true;
-          detectStartTime = millis();
-        }
+          if (!detecting) {
+            detecting = true;
+            detectStartTime = millis();
+          }
 
-        if (millis() - detectStartTime >= 5000) {
+          if (millis() - detectStartTime >= 3000) {
 
-          sendLog("PARCEL_REMOVED");
-          sendLog("ALL_PARCELS_RETRIEVED");
-          lockBox();
-          sendLog("LOCK_CLOSED");
+            sendLog("PARCEL_REMOVED");
 
-          currentMode = NONE;
+            lockBox();
+            sendLog("LOCK_CLOSED");
+
+            currentMode = NONE;
+            detecting = false;
+          }
+
+        } else {
           detecting = false;
+          detectStartTime = 0;
         }
-
-      } else {
-        detecting = false;
-        detectStartTime = 0;
       }
     }
   }
+
+  delay(50);
 }
-
-delay(50); }
-
