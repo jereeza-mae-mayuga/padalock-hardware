@@ -15,7 +15,7 @@ long readDistanceCm() {
   if (duration == 0) return -1;
 
   return duration * 0.034 / 2;
-}
+}p
 
 void setup() {
   Serial.begin(115200);

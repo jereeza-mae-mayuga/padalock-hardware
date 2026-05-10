@@ -8,9 +8,9 @@
 // =========================
 // WIFI
 // =========================
-const char* ssid = "IoEnnovate2026_3";
-const char* password = "Sdca@wifi";
-const char* serverURL = "http://192.168.0.103:3000/api/iot";
+const char* ssid = "ZTE_2.4G_7QFQX7"; //edit in exhibit
+const char* password = "YU2GR4Tx"; //edit in exhibit
+const char* serverURL = "http://192.168.1.17:3000/api/iot"; //edit in exhibit
 
 // =========================
 // LOCKER
@@ -52,6 +52,7 @@ Keypad_I2C keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS, PCF_ADDR);
 const int threshold = 13;
 bool systemAwake = false;
 bool boxUnlocked = false;
+bool parcelPresent = false;
 String inputCode = "";
 
 enum Mode {
@@ -61,6 +62,7 @@ enum Mode {
 };
 
 Mode currentMode = NONE;
+unsigned long unlockTime = 0;
 
 // =========================
 // RELAY
@@ -73,6 +75,7 @@ void lockBox() {
 void unlockBox() {
   digitalWrite(RELAY_PIN, HIGH);
   boxUnlocked = true;
+  unlockTime = millis();
 }
 
 // =========================
@@ -228,7 +231,7 @@ void loop() {
         }
 
         else {
-          sendLog("INVALID_PIN");
+          sendLog("INVALID_CODE");
           lockBox();
         }
 
@@ -242,6 +245,17 @@ void loop() {
   // SENSOR LOGIC
   // =========================
   if (boxUnlocked) {
+
+      if (millis() - unlockTime > 15000) {
+
+        sendLog("AUTO_LOCK_TIMEOUT");
+
+        lockBox();
+        sendLog("LOCK_CLOSED");
+
+        currentMode = NONE;
+        return;
+      }
 
     static unsigned long detectStartTime = 0;
     static bool detecting = false;
@@ -267,6 +281,8 @@ void loop() {
 
             sendLog("PARCEL_DETECTED");
 
+            parcelPresent = true;
+
             lockBox();
             sendLog("LOCK_CLOSED");
 
@@ -283,7 +299,7 @@ void loop() {
       // OWNER
       else if (currentMode == OWNER) {
 
-        if (d > threshold) {
+        if (parcelPresent && millis() - unlockTime > 5000 && d > threshold) {
 
           if (!detecting) {
             detecting = true;
@@ -293,6 +309,8 @@ void loop() {
           if (millis() - detectStartTime >= 3000) {
 
             sendLog("PARCEL_REMOVED");
+
+            parcelPresent = false;
 
             lockBox();
             sendLog("LOCK_CLOSED");
