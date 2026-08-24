@@ -91,7 +91,9 @@ enum Mode
 {
     NONE,
     DELIVERY,
-    OWNER
+    OWNER,
+    RETURN_DEPOSIT,
+    RETURN_PICKUP
 };
 
 Mode currentMode = NONE;
@@ -106,6 +108,13 @@ int validatedParcels = 0;
 
 String trackingInput = "";
 String ownerInput = "";
+
+bool ownerPinSession = false;
+
+String returnOtpInput = "";
+bool returnOtpSession = false;
+
+bool returnDepositPinMode = false;
 
 String deliveredTrackingNumbers = "";
 
@@ -377,6 +386,11 @@ void resetDelivery()
 
     trackingInput = "";
     deliveredTrackingNumbers = "";
+
+    returnOtpSession = false;
+    returnOtpInput = "";
+    returnDepositPinMode = false;
+    ownerPinSession = false;
 }
 
 // =====================================================
@@ -509,6 +523,20 @@ void loop()
         // =============================================
         if (waitingForParcelCount)
         {
+            if (key == '0')
+            {
+                waitingForParcelCount = false;
+                deliverySession = false;
+
+                returnOtpSession = true;
+                returnOtpInput = "";
+
+                blinkValid();
+
+                Serial.println("RETURN PICKUP OTP MODE");
+
+                return;
+            }
             if (key >= '1' && key <= '9')
             {
                 expectedParcels = key - '0';
@@ -537,7 +565,11 @@ void loop()
         // =============================================
         // * = START DELIVERY
         // =============================================
-        else if (!unlocked && key == '*')
+        else if (
+            !unlocked &&
+            !returnOtpSession &&
+            key == '*'
+        )
         {
             resetDelivery();
 
@@ -547,13 +579,21 @@ void loop()
         }
 
         // =============================================
-        // # = START OWNER PIN
+        // # = START OWNER MODE
         // =============================================
-        else if (!unlocked &&
-                 !deliverySession &&
-                 key == '#')
+        else if (
+            !unlocked &&
+            !deliverySession &&
+            !returnOtpSession &&
+            key == '#'
+        )
         {
             ownerInput = "";
+            ownerPinSession = true;
+            returnDepositPinMode = false;
+
+            Serial.println("OWNER MODE");
+            Serial.println("Press 0 first for RETURN DEPOSIT");
 
             return;
         }
@@ -590,13 +630,104 @@ void loop()
         }
 
         // =============================================
+        // RETURN PICKUP OTP
+        // 6-digit OTP from backend
+        // =============================================
+        else if (
+            !unlocked &&
+            returnOtpSession &&
+            key >= '0' &&
+            key <= '9'
+        )
+        {
+            returnOtpInput += key;
+
+            if (returnOtpInput.length() == 6)
+            {
+                String result =
+                    verifyCode(
+                        returnOtpInput,
+                        "RETURN"
+                    );
+
+                Serial.print("RETURN VERIFY RESPONSE: ");
+                Serial.println(result);
+
+                if (
+                    result.indexOf(
+                        "\"mode\":\"RETURN_PICKUP\""
+                    ) >= 0
+                )
+                {
+                    blinkValid();
+
+                    currentMode = RETURN_PICKUP;
+                    returnOtpSession = false;
+
+                    unlockBox();
+
+                    sendAction("LOCK_OPEN");
+
+                    sendCameraCommand(
+                        "START",
+                        "RETURN_PICKUP"
+                    );
+
+                    Serial.println(
+                        "RETURN PICKUP STARTED"
+                    );
+                }
+                else
+                {
+                    blinkInvalid();
+
+                    returnOtpSession = false;
+
+                    Serial.println(
+                        "INVALID RETURN OTP"
+                    );
+                }
+
+                returnOtpInput = "";
+            }
+
+            return;
+        }
+
+        // =============================================
+        // # + 0 = RETURN DEPOSIT MODE
+        // =============================================
+        else if (
+            !unlocked &&
+            ownerPinSession &&
+            !deliverySession &&
+            !returnOtpSession &&
+            ownerInput.length() == 0 &&
+            key == '0'
+        )
+        {
+            returnDepositPinMode = true;
+
+            Serial.println("RETURN DEPOSIT PIN MODE");
+
+            return;
+        }
+
+        
+
+
+        // =============================================
         // OWNER PIN
         // Current owner PIN = 4 digits
         // =============================================
-        else if (!unlocked &&
-                 !deliverySession &&
-                 key >= '0' &&
-                 key <= '9')
+       else if (
+            !unlocked &&
+            ownerPinSession &&
+            !deliverySession &&
+            !returnOtpSession &&
+            key >= '0' &&
+            key <= '9'
+        )
         {
             ownerInput += key;
 
@@ -608,19 +739,33 @@ void loop()
                 {
                     blinkValid();
 
-                    currentMode = OWNER;
+                    if (returnDepositPinMode)
+                    {
+                        currentMode = RETURN_DEPOSIT;
 
+                        unlockBox();
 
-                    unlockBox();
+                        sendAction("PIN_VALID");
+                        sendAction("LOCK_OPEN");
 
-                    sendAction("PIN_VALID");
-                    sendAction("LOCK_OPEN");
+                        Serial.println("RETURN DEPOSIT STARTED");
+                    }
+                    else
+                    {
+                        currentMode = OWNER;
 
-                    // Start RETRIEVAL surveillance
-                    sendCameraCommand(
-                        "START",
-                        "RETRIEVE"
-                    );
+                        unlockBox();
+
+                        sendAction("PIN_VALID");
+                        sendAction("LOCK_OPEN");
+
+                        sendCameraCommand(
+                            "START",
+                            "RETRIEVE"
+                        );
+
+                        Serial.println("OWNER RETRIEVAL STARTED");
+                    }
                 }
                 else
                 {
@@ -628,10 +773,12 @@ void loop()
                 }
 
                 ownerInput = "";
-            }
+                ownerPinSession = false;
+                returnDepositPinMode = false;
         }
     }
-
+}
+        
     // =================================================
     // ULTRASONIC
     // =================================================
@@ -665,35 +812,80 @@ void loop()
         // Object appears for 2 seconds -> LOCK
         // =============================================
         if (currentMode == DELIVERY)
-{
-    // Parcel must remain detected for 4 seconds
-        if (objectDetected)
-        {
-            if (detectionStart == 0)
+    {
+        // Parcel must remain detected for 4 seconds
+            if (objectDetected)
             {
-                detectionStart = millis();
+                if (detectionStart == 0)
+                {
+                    detectionStart = millis();
+                }
+
+                if (millis() - detectionStart >= DELIVERY_CONFIRM_MS)
+                {
+                    lockBox();
+
+                    currentMode = NONE;
+
+                    // Mark delivery completed first
+                    sendDeliveredParcels();
+
+                    // Then stop/finalize the surveillance recording
+                    sendCameraCommand("STOP");
+
+                    sendAction("LOCK_CLOSED");
+
+                    resetDelivery();
+                }
             }
-
-            if (millis() - detectionStart >= DELIVERY_CONFIRM_MS)
+            else
             {
-                lockBox();
-
-                currentMode = NONE;
-
-                sendCameraCommand("STOP");
-
-                sendDeliveredParcels();
-                sendAction("LOCK_CLOSED");
-
-                resetDelivery();
+                detectionStart = 0;
             }
         }
-        else
+
+        // =============================================
+        // RETURN DEPOSIT
+        //
+        // Owner places return parcel inside.
+        // Parcel must remain detected for 4 seconds.
+        // =============================================
+        else if (currentMode == RETURN_DEPOSIT)
         {
-            // Detection broke, start confirmation over
-            detectionStart = 0;
+            if (objectDetected)
+            {
+                if (detectionStart == 0)
+                {
+                    detectionStart = millis();
+                }
+
+                if (
+                    millis() - detectionStart >=
+                    DELIVERY_CONFIRM_MS
+                )
+                {
+                    lockBox();
+
+                    currentMode = NONE;
+
+                    // Backend:
+                    // PENDING -> READY_FOR_PICKUP
+                    sendAction("RETURN_DEPOSITED");
+
+                    sendAction("LOCK_CLOSED");
+
+                    returnDepositPinMode = false;
+
+                    Serial.println(
+                        "RETURN DEPOSIT COMPLETED"
+                    );
+                }
+            }
+            else
+            {
+                detectionStart = 0;
+            }
         }
-    }
 
         // =============================================
         // OWNER
@@ -731,6 +923,49 @@ void loop()
             else
             {
                 // Parcel/object still inside
+                detectionStart = 0;
+            }
+        }
+
+        // =============================================
+        // RETURN PICKUP
+        //
+        // Courier removes return parcel.
+        // Box must remain clear for 4 seconds.
+        // =============================================
+        else if (currentMode == RETURN_PICKUP)
+        {
+            if (!objectDetected)
+            {
+                if (detectionStart == 0)
+                {
+                    detectionStart = millis();
+                }
+
+                if (
+                    millis() - detectionStart >=
+                    RETRIEVAL_CONFIRM_MS
+                )
+                {
+                    lockBox();
+
+                    currentMode = NONE;
+
+                    // Tell backend physical pickup succeeded
+                    sendAction("RETURN_PICKED_UP");
+
+                    // Then finalize surveillance recording
+                    sendCameraCommand("STOP");
+
+                    sendAction("LOCK_CLOSED");
+
+                    Serial.println(
+                        "RETURN PICKUP COMPLETED"
+                    );
+                }
+            }
+            else
+            {
                 detectionStart = 0;
             }
         }
