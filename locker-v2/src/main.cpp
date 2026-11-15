@@ -23,8 +23,8 @@
 // =====================================================
 // WIFI + API
 // =====================================================
-const char* ssid = "ZTE_2.4G_7QFQX7";
-const char* password = "YU2GR4Tx";
+const char* ssid = "Zai";
+const char* password = "zai12345";
 
 const char* LOCKER_CODE = "LOCKER_1779378809171";
 const char* API_URL = "https://padalock-web.vercel.app/api/iot";
@@ -38,7 +38,9 @@ const char* CAMERA_COMMAND_API =
 // =====================================================
 // ULTRASONIC
 // =====================================================
-const int OBJECT_THRESHOLD = 13;
+const int SAMPLE_COUNT = 10;
+const float PARCEL_DIFFERENCE = 0.7;
+float emptyDistance = 0;
 
 const unsigned long DELIVERY_CONFIRM_MS = 4000;
 const unsigned long RETRIEVAL_CONFIRM_MS = 4000;
@@ -152,6 +154,9 @@ String verifyCode(String code, String verifyType)
     }
 
     HTTPClient http;
+
+    // Prevent a failed API request from hanging the locker
+    http.setTimeout(5000);
 
     http.begin(API_URL);
     http.addHeader("Content-Type", "application/json");
@@ -354,7 +359,7 @@ void lockBox()
 // =====================================================
 // ULTRASONIC
 // =====================================================
-long readDistanceCm()
+float readDistanceCm()
 {
     digitalWrite(TRIG_PIN, LOW);
     delayMicroseconds(2);
@@ -370,7 +375,31 @@ long readDistanceCm()
     if (duration == 0)
         return -1;
 
-    return duration * 0.034 / 2;
+    return duration * 0.0343 / 2.0;
+}
+
+float readAverageDistance()
+{
+    float total = 0;
+    int validReadings = 0;
+
+    for (int i = 0; i < SAMPLE_COUNT; i++)
+    {
+        float distance = readDistanceCm();
+
+        if (distance > 0)
+        {
+            total += distance;
+            validReadings++;
+        }
+
+        delay(50);
+    }
+
+    if (validReadings == 0)
+        return -1;
+
+    return total / validReadings;
 }
 
 // =====================================================
@@ -450,6 +479,23 @@ void setup()
     pinMode(TRIG_PIN, OUTPUT);
     pinMode(ECHO_PIN, INPUT);
     digitalWrite(TRIG_PIN, LOW);
+
+    // Locker must be EMPTY during startup calibration
+    delay(3000);
+
+    emptyDistance = readAverageDistance();
+
+    if (emptyDistance <= 0)
+    {
+        while (true)
+        {
+            digitalWrite(FLASH_LED, HIGH);
+            delay(100);
+
+            digitalWrite(FLASH_LED, LOW);
+            delay(100);
+        }
+    }
 
     lockBox();
 
@@ -784,27 +830,15 @@ void loop()
     // =================================================
     if (unlocked)
     {
-        long distance =
-            readDistanceCm();
+        float distance =
+    readAverageDistance();
 
-        // TEMP TEST:
-        // LED ON = ultrasonic sees something within 25 cm
-        // LED OFF = no valid detection
-        /*
-        if (distance != -1 && distance < 25)
-        {
-            digitalWrite(FLASH_LED, HIGH);
-        }
-        else
-        {
-            digitalWrite(FLASH_LED, LOW);
-        }*/
-
-        bool objectDetected =
-            (
-                distance != -1 &&
-                distance < OBJECT_THRESHOLD
-            );
+bool objectDetected =
+(
+    distance > 0 &&
+    distance <=
+        (emptyDistance - PARCEL_DIFFERENCE)
+);
 
         // =============================================
         // DELIVERY
